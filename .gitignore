@@ -1,0 +1,31 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Variable files may carry environment-specific values; only the example is
+# tracked. Never commit real values.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Plan files contain the full rendered diff, including everything Terraform
+# knows about the target Vault.
+*.tfplan
+*.tfplan.*
+plan.out
+
+# Overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
