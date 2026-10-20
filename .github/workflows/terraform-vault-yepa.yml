@@ -1,0 +1,98 @@
+name: terraform (vault-yepa)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "vault-yepa/**"
+      - ".github/workflows/terraform-vault-yepa.yml"
+  pull_request:
+    paths:
+      - "vault-yepa/**"
+      - ".github/workflows/terraform-vault-yepa.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-vault-yepa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  validate:
+    name: fmt / validate / lint (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [core, entities/apps, entities/platform]
+    defaults:
+      run:
+        working-directory: vault-yepa/${{ matrix.component }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      # -backend=false skips both classic backend and `cloud {}` init, so no
+      # HCP Terraform or Vault credentials are needed here, same reasoning
+      # as vault/'s workflow.
+      - name: terraform init
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          tflint --init --config "${GITHUB_WORKSPACE}/.tflint.hcl"
+          tflint --config "${GITHUB_WORKSPACE}/.tflint.hcl" --recursive
+
+  policy-lint:
+    name: vault policy lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Policy files under vault-yepa/entities/*/policies are HCL rendered
+      # by templatefile(). `terraform validate` never parses them, so they
+      # are checked here, same as vault/'s workflow.
+      - name: install vault cli
+        run: |
+          set -euo pipefail
+          VAULT_VERSION=1.18.3
+          curl -fsSL -o vault.zip \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -q vault.zip
+          sudo install -m 0755 vault /usr/local/bin/vault
+          vault version
+
+      - name: vault policy fmt
+        run: |
+          set -euo pipefail
+          for policy in vault-yepa/entities/*/policies/*.hcl; do
+            echo "checking ${policy}"
+            vault policy fmt "${policy}"
+          done
+          git diff --exit-code -- vault-yepa/entities
+
+  # -------------------------------------------------------------------------
+  # No `terraform plan` against HCP Terraform or the real Vault cluster here,
+  # by the same reasoning as vault/'s workflow: it would need credentials
+  # this repository must not hold. Secret scanning is already covered
+  # repository-wide by the secret-scan job in terraform.yml.
+  # -------------------------------------------------------------------------
