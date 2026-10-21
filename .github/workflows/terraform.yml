@@ -1,0 +1,111 @@
+name: terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  validate:
+    name: fmt / validate / lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vault
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      # -backend=false: no state access and no credentials are needed to
+      # validate the configuration, so CI never touches Vault or the backend.
+      - name: terraform init
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          tflint --init --config "${GITHUB_WORKSPACE}/.tflint.hcl"
+          tflint --config "${GITHUB_WORKSPACE}/.tflint.hcl" --recursive
+
+  policy-lint:
+    name: vault policy lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The policy files under vault/policies are HCL rendered by
+      # templatefile(). `terraform validate` never parses them, so they are
+      # checked here: `vault policy fmt` fails on a syntax error and rewrites
+      # the file on a formatting difference, which git then reports.
+      - name: install vault cli
+        run: |
+          set -euo pipefail
+          VAULT_VERSION=1.18.3
+          curl -fsSL -o vault.zip \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -q vault.zip
+          sudo install -m 0755 vault /usr/local/bin/vault
+          vault version
+
+      - name: vault policy fmt
+        run: |
+          set -euo pipefail
+          for policy in vault/policies/*.hcl; do
+            echo "checking ${policy}"
+            vault policy fmt "${policy}"
+          done
+          git diff --exit-code -- vault/policies
+
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install gitleaks
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION=8.21.2
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+
+      - name: scan repository history
+        run: gitleaks detect --redact --verbose --no-banner
+
+  # -------------------------------------------------------------------------
+  # A `terraform plan` job against the real cluster is deliberately absent.
+  # It needs a Vault token, and this repository must not hold one. When it is
+  # added, authenticate the workflow with GitHub OIDC against a Vault JWT role
+  # (see vault/auth/jwt-github-actions.tf.example) — never a stored token or
+  # a Personal Access Token.
+  # -------------------------------------------------------------------------

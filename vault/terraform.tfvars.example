@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and adjust. terraform.tfvars is git-ignored.
+#
+# Never add a token, a PAT or any secret value to this file: every input ends
+# up in the Terraform state.
+
+vault_address       = "https://vault.example.com"
+github_organization = "my-org"
+
+# Recommended: pin the organisation by immutable numeric ID.
+# Retrieve it with: gh api orgs/my-org --jq .id
+# github_organization_id = 123456
+
+# Structural defaults — override only if your estate differs.
+# github_auth_path       = "github"
+# kv_mount_path          = "apps"
+# platform_kv_mount_path = "platform"
+# kv_max_versions        = 10
+# kv_cas_required        = true

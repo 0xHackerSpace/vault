@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and adjust, or set the equivalent workspace
+# variables directly in HCP Terraform. terraform.tfvars is git-ignored.
+#
+# Never add a token, a PAT or any secret value to this file: every input ends
+# up in the Terraform state.
+
+vault_address = "https://vault.example.com"
+
+# entities = ["apps", "platform"]

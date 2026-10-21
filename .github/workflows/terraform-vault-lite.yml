@@ -1,0 +1,128 @@
+name: terraform (vault-lite)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "vault-lite/**"
+      - ".github/workflows/terraform-vault-lite.yml"
+  pull_request:
+    paths:
+      - "vault-lite/**"
+      - ".github/workflows/terraform-vault-lite.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-vault-lite-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  validate:
+    name: fmt / validate / lint (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [entities/apps, entities/platform]
+    defaults:
+      run:
+        working-directory: vault-lite/${{ matrix.component }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      # -backend=false skips both classic backend and `cloud {}` init, so no
+      # HCP Terraform or Vault credentials are needed here.
+      - name: terraform init
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          tflint --init --config "${GITHUB_WORKSPACE}/.tflint.hcl"
+          tflint --config "${GITHUB_WORKSPACE}/.tflint.hcl" --recursive
+
+  path-collisions:
+    name: entity path collisions
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # There is no core/ state reserving kv_mount_path / github_auth_path
+      # centrally (see docs/adr/0001) — this is the closest thing to that
+      # guarantee: fail the PR if two entities default to the same mount or
+      # auth path on the shared, flat Vault.
+      - name: check for duplicate default paths across entities
+        run: |
+          set -euo pipefail
+          # -A-style grep doesn't reach `default` here: it sits several
+          # lines after `variable "X" {` because of the heredoc
+          # description in between. Scan the whole block instead.
+          check_var() {
+            local var_name="$1"
+            local values
+            values=$(awk -v v="variable \"${var_name}\" {" '
+              $0 == v { inblock=1 }
+              inblock && /default[ \t]*=/ { print }
+              inblock && /^}/ { inblock=0 }
+            ' vault-lite/entities/*/variables.tf | grep -oE '"[^"]+"')
+            local dupes
+            dupes=$(echo "$values" | sort | uniq -d)
+            if [ -n "$dupes" ]; then
+              echo "::error::Duplicate default(s) for var.${var_name} across entities: ${dupes}"
+              return 1
+            fi
+          }
+          check_var kv_mount_path
+          check_var github_auth_path
+
+  policy-lint:
+    name: vault policy lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install vault cli
+        run: |
+          set -euo pipefail
+          VAULT_VERSION=1.18.3
+          curl -fsSL -o vault.zip \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -q vault.zip
+          sudo install -m 0755 vault /usr/local/bin/vault
+          vault version
+
+      - name: vault policy fmt
+        run: |
+          set -euo pipefail
+          for policy in vault-lite/entities/*/policies/*.hcl; do
+            echo "checking ${policy}"
+            vault policy fmt "${policy}"
+          done
+          git diff --exit-code -- vault-lite/entities
+
+  # -------------------------------------------------------------------------
+  # No `terraform plan` against HCP Terraform or the real Vault here, same
+  # reasoning as vault/ and vault-yepa/'s workflows. Secret scanning is
+  # already covered repository-wide by terraform.yml.
+  # -------------------------------------------------------------------------

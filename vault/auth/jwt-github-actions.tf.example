@@ -1,0 +1,64 @@
+# ===========================================================================
+# NOT ACTIVE — architectural placeholder for workload authentication.
+#
+# The .tf.example extension means Terraform ignores this file. To adopt it:
+#   1. rename it to jwt.tf;
+#   2. add the variables it references to ./variables.tf and wire them from
+#      the root module (../auth.tf, ../variables.tf);
+#   3. review the bound_claims before applying — they are what stops another
+#      repository from assuming this role.
+#
+# Target flow (the preferred pattern for pipelines):
+#
+#   GitHub Actions
+#        |  requests an OIDC ID token from GitHub (permissions: id-token: write)
+#        v
+#   GitHub OIDC JWT   (short-lived, per-job, non-exportable)
+#        |
+#        v
+#   Vault JWT auth method  (validates signature against GitHub's JWKS)
+#        |  matches bound_claims: repository, ref, environment
+#        v
+#   Vault role  ->  Vault policy  ->  secret engine
+#
+# Why this and not a PAT: the JWT is minted per job, expires in minutes,
+# is bound to a specific repository/branch/environment, and there is no
+# long-lived credential to leak, rotate or forget. A PAT in CI is a
+# standing, human-scoped credential and must not be used for workloads.
+# ===========================================================================
+
+resource "vault_jwt_auth_backend" "github_actions" {
+  path               = "jwt-github-actions"
+  type               = "jwt"
+  description        = "GitHub Actions workload authentication via GitHub OIDC."
+  oidc_discovery_url = "https://token.actions.githubusercontent.com"
+  bound_issuer       = "https://token.actions.githubusercontent.com"
+}
+
+# One role per workload identity. Never one role for the whole organisation:
+# bound_subject / bound_claims are the entire security boundary.
+resource "vault_jwt_auth_backend_role" "example_app_prod" {
+  backend   = vault_jwt_auth_backend.github_actions.path
+  role_name = "payment-api-prod"
+  role_type = "jwt"
+
+  user_claim = "repository"
+
+  bound_claims_type = "string"
+  bound_claims = {
+    # Pin the exact repository, and the exact deployment environment.
+    repository  = "my-org/payment-api"
+    environment = "prod"
+  }
+
+  bound_audiences = ["https://github.com/my-org"]
+
+  # Policies granting only the paths this pipeline needs, e.g. a dedicated
+  # read policy for apps/data/payment-api/prod/*.
+  token_policies = ["payment-api-prod-read"]
+
+  # Short-lived: the token only has to outlive the job step that uses it.
+  token_ttl     = 900
+  token_max_ttl = 1800
+  token_type    = "service"
+}

@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and adjust, or set the equivalent workspace
+# variables directly in HCP Terraform. terraform.tfvars is git-ignored.
+
+vault_address       = "https://vault.example.com"
+github_organization = "my-org"
+
+# Recommended: pin the organisation by immutable numeric ID.
+# github_organization_id = 123456
+
+# github_auth_path = "github-platform"
+# kv_mount_path    = "platform"
